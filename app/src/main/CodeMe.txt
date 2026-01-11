@@ -1,0 +1,2003 @@
+﻿--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\data\model\MediaFile.kt ---
+package com.example.simplecamera.data.model
+
+import android.net.Uri
+import android.os.Parcelable
+import kotlinx.parcelize.Parcelize
+
+@Parcelize
+data class MediaFile(
+    val id: Long,
+    val uri: Uri,
+    val isVideo: Boolean,
+    val dateAdded: Long
+) : Parcelable
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\data\MediaStoreUtils.kt ---
+package com.example.simplecamera.data
+
+import android.content.ContentValues
+import android.content.Context
+import android.os.Build
+import android.provider.MediaStore
+import androidx.camera.core.ImageCapture
+import androidx.camera.video.MediaStoreOutputOptions
+import java.text.SimpleDateFormat
+import java.util.Locale
+
+object MediaStoreUtils {
+    private const val FILENAME_FORMAT = "yyyy-MM-dd-HH-mm-ss-SSS"
+    private const val APP_FOLDER = "SimpleCamera"
+
+    private fun createContentValues(mimeType: String, relativePath: String): ContentValues {
+        val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US).format(System.currentTimeMillis())
+        return ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+            }
+        }
+    }
+
+    fun getPhotoOutputOptions(context: Context): ImageCapture.OutputFileOptions {
+        return ImageCapture.OutputFileOptions.Builder(
+            context.contentResolver,
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            createContentValues("image/jpeg", "Pictures/$APP_FOLDER")
+        ).build()
+    }
+
+    fun getVideoOutputOptions(context: Context): MediaStoreOutputOptions {
+        return MediaStoreOutputOptions.Builder(
+            context.contentResolver,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        )
+            .setContentValues(createContentValues("video/mp4", "Movies/$APP_FOLDER"))
+            .build()
+    }
+}
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\ui\camera\CameraFragment.kt ---
+package com.example.simplecamera.ui.camera
+
+import android.Manifest
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
+import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.os.Build
+import android.os.Bundle
+import android.util.Log
+import android.view.*
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.AspectRatio
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.video.VideoRecordEvent
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updateLayoutParams
+import androidx.fragment.app.Fragment
+import androidx.navigation.fragment.findNavController
+import com.example.simplecamera.R
+import com.example.simplecamera.databinding.FragmentCameraBinding
+import com.example.simplecamera.ui.camera.CameraManager
+import java.util.concurrent.TimeUnit
+
+class CameraFragment : Fragment() {
+
+    private var _binding: FragmentCameraBinding? = null
+    private val binding get() = _binding!!
+
+    private lateinit var cameraManager: CameraManager
+    private var isVideoMode = false
+    private var blinkAnimator: ObjectAnimator? = null
+
+    private val requestPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (permissions.values.all { it }) {
+            cameraManager.startCamera()
+        } else {
+            Toast.makeText(context, "Нужны разрешения", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        _binding = FragmentCameraBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        cameraManager = CameraManager(
+            context = requireContext(),
+            previewView = binding.viewFinder,
+            lifecycleOwner = viewLifecycleOwner,
+            onVideoRecordEvent = ::handleVideoEvent,
+            onPhotoSaved = {
+                flashScreen()
+                Toast.makeText(context, "Фото сохранено", Toast.LENGTH_SHORT).show()
+            },
+            onError = { msg -> Log.e("CameraFragment", msg) },
+            onFocus = { x, y ->
+                val globalX = x + binding.viewFinder.x
+                val globalY = y + binding.viewFinder.y
+                showFocusRing(globalX, globalY)
+            }
+        )
+
+        setupInsets()
+        setupListeners()
+
+        if (allPermissionsGranted()) {
+            cameraManager.startCamera()
+        } else {
+            requestPermissionLauncher.launch(REQUIRED_PERMISSIONS)
+        }
+
+        updateFlashButtonState()
+    }
+
+    private fun setupListeners() {
+        binding.apply {
+            imageCaptureButton.setOnClickListener {
+                if (isVideoMode) toggleVideoRecording() else cameraManager.takePhoto()
+            }
+
+            cameraSwitchButton.setOnClickListener {
+                cameraManager.toggleCamera()
+                updateFlashButtonState()
+            }
+
+            btnAspectRatio.setOnClickListener {
+                if (cameraManager.isRecording()) return@setOnClickListener
+
+                val newRatio = if (binding.btnAspectRatio.text == "3:4") AspectRatio.RATIO_16_9 else AspectRatio.RATIO_4_3
+                cameraManager.setFormat(newRatio)
+
+                binding.btnAspectRatio.text = if (newRatio == AspectRatio.RATIO_4_3) "3:4" else "9:16"
+            }
+
+            btnFlash.setOnClickListener {
+                if (cameraManager.cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA) return@setOnClickListener
+                val mode = cameraManager.toggleFlash(isVideoMode)
+                btnFlash.setImageResource(
+                    if (mode == ImageCapture.FLASH_MODE_ON) R.drawable.ic_flash_on else R.drawable.ic_flash_off
+                )
+            }
+
+            galleryButton.setOnClickListener {
+                findNavController().navigate(R.id.action_camera_to_gallery)
+            }
+
+            modeToggle.addOnButtonCheckedListener { _, checkedId, isChecked ->
+                if (isChecked) {
+                    val newModeVideo = (checkedId == R.id.btn_mode_video)
+
+                    if (isVideoMode != newModeVideo) {
+                        isVideoMode = newModeVideo
+                        cameraManager.setMode(isVideoMode)
+                        updateUIForMode()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun updateFlashButtonState() {
+        val isFrontCamera = cameraManager.cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA
+
+        if (isFrontCamera) {
+            binding.btnFlash.alpha = 0.5f
+            binding.btnFlash.isEnabled = false
+            binding.btnFlash.setImageResource(R.drawable.ic_flash_off)
+            if (cameraManager.flashMode != ImageCapture.FLASH_MODE_OFF) {
+                cameraManager.toggleFlash(isVideoMode)
+            }
+        } else {
+            binding.btnFlash.alpha = 1.0f
+            binding.btnFlash.isEnabled = true
+            binding.btnFlash.setImageResource(
+                if (cameraManager.flashMode == ImageCapture.FLASH_MODE_ON) R.drawable.ic_flash_on else R.drawable.ic_flash_off
+            )
+        }
+    }
+
+    private fun toggleVideoRecording() {
+        if (cameraManager.isRecording()) {
+            cameraManager.stopRecording()
+        } else {
+            cameraManager.startRecording()
+        }
+    }
+
+    private fun handleVideoEvent(event: VideoRecordEvent) {
+        when (event) {
+            is VideoRecordEvent.Start -> {
+                setUiEnabled(false)
+                animateRecordButton(true)
+                binding.recordingPanel.visibility = View.VISIBLE
+                startBlinking()
+                binding.root.keepScreenOn = true
+            }
+            is VideoRecordEvent.Status -> {
+                val time = TimeUnit.NANOSECONDS.toSeconds(event.recordingStats.recordedDurationNanos)
+                binding.timerText.text = String.format("%02d:%02d", time / 60, time % 60)
+            }
+            is VideoRecordEvent.Finalize -> {
+                setUiEnabled(true)
+                animateRecordButton(false)
+                binding.recordingPanel.visibility = View.GONE
+                stopBlinking()
+                binding.root.keepScreenOn = false
+                if (!event.hasError()) {
+                    Toast.makeText(context, "Видео сохранено", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun updateUIForMode() {
+        val strokeColor = if (isVideoMode) Color.RED else Color.WHITE
+        binding.imageCaptureButton.strokeColor = ColorStateList.valueOf(strokeColor)
+        binding.imageCaptureButton.backgroundTintList = ContextCompat.getColorStateList(requireContext(), android.R.color.transparent)
+
+        if (!cameraManager.isRecording()) {
+            binding.recordingPanel.visibility = View.GONE
+            stopBlinking()
+            val density = resources.displayMetrics.density
+            binding.imageCaptureButton.cornerRadius = (35 * density).toInt()
+            binding.imageCaptureButton.icon = null
+        }
+    }
+
+    private fun animateRecordButton(isRecording: Boolean) {
+        val button = binding.imageCaptureButton
+        val density = resources.displayMetrics.density
+        val startRadius = if (isRecording) 35 * density else 8 * density
+        val endRadius = if (isRecording) 8 * density else 35 * density
+
+        ValueAnimator.ofFloat(startRadius, endRadius).apply {
+            duration = 300L
+            addUpdateListener { button.cornerRadius = (it.animatedValue as Float).toInt() }
+            start()
+        }
+    }
+
+    private fun flashScreen() {
+        binding.flashOverlay.visibility = View.VISIBLE
+        binding.flashOverlay.postDelayed({ binding.flashOverlay.visibility = View.GONE }, 100L)
+    }
+
+    private fun startBlinking() {
+        blinkAnimator = ObjectAnimator.ofFloat(binding.recordingIndicator, "alpha", 1f, 0f, 1f).apply {
+            duration = 1000L
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.RESTART
+            start()
+        }
+    }
+
+    private fun stopBlinking() {
+        blinkAnimator?.cancel()
+        binding.recordingIndicator.alpha = 1f
+    }
+
+    private fun showFocusRing(x: Float, y: Float) {
+        binding.focusRing.apply {
+            this.x = x - (width / 2)
+            this.y = y - (height / 2)
+            visibility = View.VISIBLE
+            alpha = 1f
+
+            animate()
+                .alpha(0f)
+                .setDuration(500L)
+                .setStartDelay(200L)
+                .withEndAction { visibility = View.INVISIBLE }
+                .start()
+        }
+    }
+
+    private fun setUiEnabled(enabled: Boolean) {
+        binding.modeToggle.isEnabled = enabled
+        binding.btnAspectRatio.isEnabled = enabled
+        binding.galleryButton.isEnabled = enabled
+        val alpha = if (enabled) 1.0f else 0.5f
+        binding.modeToggle.alpha = alpha
+        binding.btnAspectRatio.alpha = alpha
+        binding.galleryButton.alpha = alpha
+
+        updateFlashButtonState()
+    }
+
+    private fun setupInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { _, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val density = resources.displayMetrics.density
+            val marginButtons = (16 * density).toInt()
+            val marginCameraTop = systemBars.top + (70 * density).toInt()
+
+            binding.btnFlash.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = systemBars.top + marginButtons }
+            binding.btnAspectRatio.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = systemBars.top + marginButtons }
+            binding.recordingPanel.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = marginCameraTop + (16 * density).toInt() }
+            binding.viewFinder.updateLayoutParams<ViewGroup.MarginLayoutParams> { topMargin = marginCameraTop }
+            insets
+        }
+    }
+
+    private fun allPermissionsGranted() = REQUIRED_PERMISSIONS.all {
+        ContextCompat.checkSelfPermission(requireContext(), it) == PackageManager.PERMISSION_GRANTED
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        cameraManager.shutdown()
+        stopBlinking()
+        _binding = null
+    }
+
+    companion object {
+        private val REQUIRED_PERMISSIONS = mutableListOf(
+            Manifest.permission.CAMERA,
+            Manifest.permission.RECORD_AUDIO
+        ).apply {
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }.toTypedArray()
+    }
+}
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\ui\camera\CameraManager.kt ---
+package com.example.simplecamera.ui.camera
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.util.Log
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import androidx.camera.core.*
+import androidx.camera.core.resolutionselector.*
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
+import androidx.camera.video.*
+import androidx.camera.video.VideoCapture
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.LifecycleOwner
+import com.example.simplecamera.data.MediaStoreUtils
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit.SECONDS;
+
+class CameraManager(
+    private val context: Context,
+    private val previewView: PreviewView,
+    private val lifecycleOwner: LifecycleOwner,
+    private val onVideoRecordEvent: (VideoRecordEvent) -> Unit,
+    private val onPhotoSaved: () -> Unit,
+    private val onError: (String) -> Unit,
+    private val onFocus: (Float, Float) -> Unit
+) {
+
+    private var preview: Preview? = null
+    private var imageCapture: ImageCapture? = null
+    private var videoCapture: VideoCapture<Recorder>? = null
+
+    private var camera: Camera? = null
+    private var cameraProvider: ProcessCameraProvider? = null
+    private var recording: Recording? = null
+    private val cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
+    var flashMode: Int = ImageCapture.FLASH_MODE_OFF
+    var cameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
+    var aspectRatio: Int = AspectRatio.RATIO_4_3
+
+    private var isVideoMode: Boolean = false
+
+    fun startCamera() {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+        cameraProviderFuture.addListener({
+            cameraProvider = cameraProviderFuture.get()
+            bindCameraUseCases()
+        }, ContextCompat.getMainExecutor(context))
+    }
+
+    fun setMode(isVideo: Boolean) {
+        if (this.isVideoMode == isVideo) return
+        this.isVideoMode = isVideo
+        bindCameraUseCases()
+    }
+
+    private fun createUseCases() {
+        val resolutionSelector = ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy(aspectRatio,
+                AspectRatioStrategy.FALLBACK_RULE_AUTO))
+            .build()
+
+        preview = Preview.Builder()
+            .setResolutionSelector(resolutionSelector)
+            .build()
+            .apply { setSurfaceProvider(previewView.surfaceProvider) }
+
+        imageCapture = ImageCapture.Builder()
+            .setFlashMode(flashMode)
+            .setResolutionSelector(resolutionSelector)
+            .build()
+
+        val recorder = Recorder.Builder()
+            .setQualitySelector(QualitySelector.from(Quality.HIGHEST))
+            .setAspectRatio(aspectRatio)
+            .build()
+        videoCapture = VideoCapture.withOutput(recorder)
+    }
+
+    private fun bindCameraUseCases() {
+        val provider = cameraProvider ?: return
+
+        if (preview == null || imageCapture == null || videoCapture == null) {
+            createUseCases()
+        }
+
+        preview?.setSurfaceProvider(previewView.surfaceProvider)
+
+        try {
+            provider.unbindAll()
+
+            val useCases = mutableListOf<UseCase>()
+
+            preview?.let { useCases.add(it) }
+
+            if (isVideoMode) {
+                videoCapture?.let { useCases.add(it) }
+            } else {
+                imageCapture?.let { useCases.add(it) }
+            }
+
+            camera = provider.bindToLifecycle(
+                lifecycleOwner,
+                cameraSelector,
+                *useCases.toTypedArray()
+            )
+
+            setupZoomAndTapToFocus()
+            updateTorchState(isVideoMode)
+        } catch (exc: Exception) {
+            onError("Ошибка привязки камеры: ${exc.message}")
+        }
+    }
+
+    fun takePhoto() {
+        val imageCapture = imageCapture ?: return
+        if (isVideoMode) return
+
+        val outputOptions = MediaStoreUtils.getPhotoOutputOptions(context)
+
+        imageCapture.takePicture(outputOptions, cameraExecutor,
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onError(exc: ImageCaptureException) {
+                    onError("Ошибка фото: ${exc.message}")
+                }
+                override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    ContextCompat.getMainExecutor(context).execute { onPhotoSaved() }
+                }
+            })
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startRecording() {
+        val videoCapture = this.videoCapture ?: return
+        if (!isVideoMode) return
+
+        val outputOptions = MediaStoreUtils.getVideoOutputOptions(context)
+
+        recording = videoCapture.output
+            .prepareRecording(context, outputOptions)
+            .apply { withAudioEnabled() }
+            .asPersistentRecording()
+            .start(cameraExecutor) { event ->
+                ContextCompat.getMainExecutor(context).execute {
+                    onVideoRecordEvent(event)
+                }
+            }
+    }
+
+    fun stopRecording() {
+        recording?.stop()
+        recording = null
+    }
+
+    fun isRecording() = recording != null
+
+    fun toggleCamera() {
+        cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA)
+            CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA
+        startCamera()
+    }
+
+    fun setFormat(ratio: Int) {
+        if (isRecording()) return
+        aspectRatio = ratio
+        preview = null
+        imageCapture = null
+        videoCapture = null
+        startCamera()
+    }
+
+    fun toggleFlash(isVideoMode: Boolean): Int {
+        flashMode = if (flashMode == ImageCapture.FLASH_MODE_OFF) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
+        imageCapture?.flashMode = flashMode
+        updateTorchState(isVideoMode)
+        return flashMode
+    }
+
+    fun updateTorchState(isVideoMode: Boolean = false) {
+        try {
+            if (isVideoMode && flashMode == ImageCapture.FLASH_MODE_ON) {
+                camera?.cameraControl?.enableTorch(true)
+            } else {
+                camera?.cameraControl?.enableTorch(false)
+            }
+        } catch (e: Exception) {
+            Log.e("CameraManager", "Torch error", e)
+        }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupZoomAndTapToFocus() {
+        val cam = camera ?: return
+        var isZooming = false
+        val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                isZooming = true
+                return true
+            }
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val currentZoom = cam.cameraInfo.zoomState.value?.zoomRatio ?: 1f
+                cam.cameraControl.setZoomRatio(currentZoom * detector.scaleFactor)
+                return true
+            }
+        })
+
+        previewView.setOnTouchListener { _, event ->
+            scaleDetector.onTouchEvent(event)
+
+            if (event.action == MotionEvent.ACTION_UP) {
+                if (isZooming) {
+                    isZooming = false
+                    return@setOnTouchListener true
+                }
+
+                val factory = previewView.meteringPointFactory
+                val point = factory.createPoint(event.x, event.y)
+
+                val action = FocusMeteringAction.Builder(point)
+                    .setAutoCancelDuration(3, SECONDS)
+                    .build()
+
+                try {
+                    cam.cameraControl.startFocusAndMetering(action)
+                } catch (e: Exception) { }
+
+                onFocus(event.x, event.y)
+            }
+            true
+        }
+    }
+
+    fun shutdown() {
+        cameraExecutor.shutdown()
+    }
+}
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\ui\gallery\GalleryAdapter.kt ---
+package com.example.simplecamera.ui.gallery
+
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.recyclerview.widget.DiffUtil
+import androidx.recyclerview.widget.ListAdapter
+import androidx.recyclerview.widget.RecyclerView
+import com.bumptech.glide.Glide
+import com.example.simplecamera.data.model.MediaFile
+import com.example.simplecamera.databinding.ItemGalleryBinding
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class GalleryAdapter(
+    private val onClick: (MediaFile) -> Unit
+) : ListAdapter<MediaFile, GalleryAdapter.ViewHolder>(MediaDiffCallback()) {
+
+    private val dateFormat = SimpleDateFormat("dd.MM.yyyy\nHH:mm", Locale.getDefault())
+
+    inner class ViewHolder(private val binding: ItemGalleryBinding) : RecyclerView.ViewHolder(binding.root) {
+        fun bind(item: MediaFile) {
+            Glide.with(binding.root)
+                .load(item.uri)
+                .centerCrop()
+                .into(binding.thumbnail)
+
+            binding.typeIcon.visibility = if (item.isVideo) View.VISIBLE else View.GONE
+            binding.dateText.text = dateFormat.format(Date(item.dateAdded))
+
+            binding.root.setOnClickListener { onClick(item) }
+        }
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+        val binding = ItemGalleryBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+        return ViewHolder(binding)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int) {
+        holder.bind(getItem(position))
+    }
+
+    class MediaDiffCallback : DiffUtil.ItemCallback<MediaFile>() {
+        override fun areItemsTheSame(oldItem: MediaFile, newItem: MediaFile): Boolean = oldItem.id == newItem.id
+        override fun areContentsTheSame(oldItem: MediaFile, newItem: MediaFile): Boolean = oldItem == newItem
+    }
+}
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\ui\gallery\GalleryFragment.kt ---
+package com.example.simplecamera.ui.gallery
+
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
+import androidx.navigation.fragment.findNavController
+import androidx.recyclerview.widget.GridLayoutManager
+import com.example.simplecamera.R
+import com.example.simplecamera.databinding.FragmentGalleryBinding
+
+class GalleryFragment : Fragment() {
+    private var _binding: FragmentGalleryBinding? = null
+    private val binding get() = _binding!!
+
+    private val viewModel: GalleryViewModel by activityViewModels()
+    private lateinit var adapter: GalleryAdapter
+
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        _binding = FragmentGalleryBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            insets
+        }
+
+        setupUI()
+        observeViewModel()
+    }
+
+    private fun setupUI() {
+        binding.btnBack.setOnClickListener { findNavController().popBackStack() }
+
+        adapter = GalleryAdapter { selectedFile ->
+            viewModel.currentPosition = adapter.currentList.indexOf(selectedFile)
+            findNavController().navigate(R.id.action_gallery_to_viewer)
+        }
+
+        binding.recyclerView.layoutManager = GridLayoutManager(context, 3)
+        binding.recyclerView.adapter = adapter
+
+        binding.filterChipGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+            checkedIds.firstOrNull()?.let { id ->
+                viewModel.filter(id)
+            }
+        }
+    }
+
+    private fun observeViewModel() {
+        viewModel.mediaList.observe(viewLifecycleOwner) { items ->
+            adapter.submitList(items)
+
+            if (items.isEmpty()) {
+                binding.emptyView.visibility = View.VISIBLE
+                binding.recyclerView.visibility = View.GONE
+            } else {
+                binding.emptyView.visibility = View.GONE
+                binding.recyclerView.visibility = View.VISIBLE
+            }
+        }
+
+        viewModel.isLoading.observe(viewLifecycleOwner) { isLoading ->
+            binding.progressBar.visibility = if (isLoading) View.VISIBLE else View.GONE
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.loadMedia()
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        _binding = null
+    }
+}
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\ui\gallery\GalleryViewModel.kt ---
+package com.example.simplecamera.ui.gallery
+
+import android.app.Application
+import android.content.ContentUris
+import android.provider.MediaStore
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.viewModelScope
+import com.example.simplecamera.R
+import com.example.simplecamera.data.model.MediaFile
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+
+class GalleryViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val _mediaList = MutableLiveData<List<MediaFile>>()
+    val mediaList: LiveData<List<MediaFile>> get() = _mediaList
+
+    private val _isLoading = MutableLiveData<Boolean>()
+    val isLoading: LiveData<Boolean> get() = _isLoading
+
+    var currentPosition: Int = 0
+
+    private var allFiles: List<MediaFile> = emptyList()
+
+    fun loadMedia() {
+        _isLoading.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = mutableListOf<MediaFile>()
+            val projection = arrayOf(
+                MediaStore.Files.FileColumns._ID,
+                MediaStore.Files.FileColumns.MEDIA_TYPE,
+                MediaStore.Files.FileColumns.DATE_ADDED
+            )
+            val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
+            val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE}=?"
+            val selectionArgs = arrayOf(
+                MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
+                MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
+            )
+            val uri = MediaStore.Files.getContentUri("external")
+
+            getApplication<Application>().contentResolver.query(
+                uri, projection, selection, selectionArgs, sortOrder
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                val typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
+                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
+
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idCol)
+                    val type = cursor.getInt(typeCol)
+                    val date = cursor.getLong(dateCol)
+                    val contentUri = ContentUris.withAppendedId(uri, id)
+
+                    list.add(
+                        MediaFile(
+                            id,
+                            contentUri,
+                            type == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO,
+                            date * 1000
+                        )
+                    )
+                }
+            }
+
+            allFiles = list
+            _mediaList.postValue(list)
+            _isLoading.postValue(false)
+        }
+    }
+
+    fun filter(filterId: Int) {
+        val filtered = when (filterId) {
+            R.id.chipPhotos -> allFiles.filter { !it.isVideo }
+            R.id.chipVideos -> allFiles.filter { it.isVideo }
+            else -> allFiles
+        }
+        _mediaList.value = filtered
+    }
+
+    fun deleteItem(index: Int) {
+        if (index in allFiles.indices) {
+            val newList = _mediaList.value?.toMutableList() ?: return
+            if (index < newList.size) {
+                newList.removeAt(index)
+                _mediaList.value = newList
+            }
+        }
+    }
+}
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\ui\viewer\ViewerFragment.kt ---
+package com.example.simplecamera.ui.viewer
+
+import android.os.Bundle
+import android.view.GestureDetector
+import android.view.LayoutInflater
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import android.widget.SeekBar
+import android.widget.Toast
+import androidx.core.view.GestureDetectorCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
+import androidx.navigation.fragment.findNavController
+import com.bumptech.glide.Glide
+import com.example.simplecamera.databinding.FragmentViewerBinding
+import com.example.simplecamera.ui.gallery.GalleryViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.util.concurrent.TimeUnit
+import kotlin.math.abs
+
+class ViewerFragment : Fragment() {
+    private var _binding: FragmentViewerBinding? = null
+    private val binding get() = _binding!!
+
+    private val viewModel: GalleryViewModel by activityViewModels()
+
+    private var isUiVisible = true
+    private var wasPlayingBeforeSeek = false
+    private lateinit var gestureDetector: GestureDetectorCompat
+
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
+        _binding = FragmentViewerBinding.inflate(inflater, container, false)
+        return binding.root
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { v, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
+            insets
+        }
+
+        val list = viewModel.mediaList.value
+        if (list.isNullOrEmpty()) {
+            findNavController().popBackStack()
+            return
+        }
+
+        showContent(viewModel.currentPosition)
+        setupGestures()
+        setupControls()
+        startSeekBarUpdater()
+    }
+
+    private fun startSeekBarUpdater() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            while (isActive) {
+                if (_binding != null && binding.videoView.isPlaying) {
+                    val current = binding.videoView.currentPosition
+                    binding.videoSeekBar.progress = current
+                    binding.tvCurrentTime.text = formatTime(current)
+                }
+                delay(500)
+            }
+        }
+    }
+
+    private fun setupControls() {
+        binding.btnBack.setOnClickListener { findNavController().popBackStack() }
+        binding.btnDelete.setOnClickListener { deleteCurrentMedia() }
+
+        binding.videoSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) binding.tvCurrentTime.text = formatTime(progress)
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {
+                wasPlayingBeforeSeek = binding.videoView.isPlaying
+                binding.videoView.pause()
+            }
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                seekBar?.let {
+                    binding.videoView.seekTo(it.progress)
+                    if (wasPlayingBeforeSeek) {
+                        binding.videoView.start()
+                        binding.iconPlayCenter.visibility = View.GONE
+                    } else {
+                        binding.iconPlayCenter.visibility = View.VISIBLE
+                        binding.tvCurrentTime.text = formatTime(it.progress)
+                    }
+                }
+            }
+        })
+    }
+
+    private fun setupGestures() {
+        gestureDetector = GestureDetectorCompat(
+            requireContext(),
+            object : GestureDetector.SimpleOnGestureListener() {
+                private val SWIPE_THRESHOLD = 100
+                private val SWIPE_VELOCITY_THRESHOLD = 100
+
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                    val list = viewModel.mediaList.value ?: return false
+                    val item = list.getOrNull(viewModel.currentPosition)
+                    if (item?.isVideo == true) {
+                        toggleVideoPlayback()
+                    } else {
+                        toggleUiVisibility()
+                    }
+                    return true
+                }
+
+                override fun onFling(
+                    e1: MotionEvent?,
+                    e2: MotionEvent,
+                    velocityX: Float,
+                    velocityY: Float
+                ): Boolean {
+                    if (e1 == null) return false
+                    val diffX = e2.x - e1.x
+                    val diffY = e2.y - e1.y
+
+                    if (abs(diffX) > abs(diffY) && abs(diffX) > SWIPE_THRESHOLD
+                        && abs(velocityX) > SWIPE_VELOCITY_THRESHOLD) {
+                        if (diffX > 0) loadPrevious() else loadNext()
+                        return true
+                    }
+                    return false
+                }
+            })
+
+        val touchListener = View.OnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+            true
+        }
+        binding.container.setOnTouchListener(touchListener)
+        binding.videoView.setOnTouchListener(touchListener)
+    }
+
+    private fun toggleVideoPlayback() {
+        if (binding.videoView.isPlaying) {
+            binding.videoView.pause()
+            binding.iconPlayCenter.visibility = View.VISIBLE
+            if (!isUiVisible) toggleUiVisibility()
+        } else {
+            binding.videoView.start()
+            binding.iconPlayCenter.visibility = View.GONE
+        }
+    }
+
+    private fun deleteCurrentMedia() {
+        val list = viewModel.mediaList.value ?: return
+        val pos = viewModel.currentPosition
+        if (pos !in list.indices) return
+
+        val item = list[pos]
+        try {
+            val rowsDeleted = requireContext().contentResolver.delete(item.uri, null, null)
+            if (rowsDeleted > 0) {
+                Toast.makeText(context, "Удалено", Toast.LENGTH_SHORT).show()
+                viewModel.deleteItem(pos)
+
+                val newList = viewModel.mediaList.value
+                if (newList.isNullOrEmpty()) {
+                    findNavController().popBackStack()
+                } else {
+                    if (viewModel.currentPosition >= newList.size) {
+                        viewModel.currentPosition = newList.size - 1
+                    }
+                    showContent(viewModel.currentPosition)
+                }
+            } else {
+                Toast.makeText(context, "Не удалось удалить", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(context, "Ошибка: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun loadPrevious() {
+        if (viewModel.currentPosition > 0) {
+            viewModel.currentPosition--
+            showContent(viewModel.currentPosition)
+        }
+    }
+
+    private fun loadNext() {
+        val list = viewModel.mediaList.value ?: return
+        if (viewModel.currentPosition < list.size - 1) {
+            viewModel.currentPosition++
+            showContent(viewModel.currentPosition)
+        }
+    }
+
+    private fun showContent(position: Int) {
+        val list = viewModel.mediaList.value ?: return
+        val item = list.getOrNull(position) ?: return
+
+        binding.videoView.stopPlayback()
+        binding.iconPlayCenter.visibility = View.GONE
+
+        binding.imageView.alpha = 0f
+        binding.videoView.alpha = 0f
+
+        if (item.isVideo) {
+            binding.imageView.visibility = View.GONE
+            binding.videoView.visibility = View.VISIBLE
+            binding.videoControlsPanel.visibility = if (isUiVisible) View.VISIBLE else View.GONE
+
+            binding.videoView.setVideoURI(item.uri)
+            binding.videoView.setOnPreparedListener { mp ->
+                mp.isLooping = true
+                binding.videoView.start()
+                binding.videoSeekBar.max = binding.videoView.duration
+                binding.tvTotalTime.text = formatTime(binding.videoView.duration)
+
+                binding.videoView.animate().alpha(1f).setDuration(300).start()
+            }
+        } else {
+            binding.videoView.visibility = View.GONE
+            binding.videoControlsPanel.visibility = View.GONE
+            binding.imageView.visibility = View.VISIBLE
+
+            Glide.with(this).load(item.uri).fitCenter().into(binding.imageView)
+            binding.imageView.animate().alpha(1f).setDuration(300).start()
+        }
+    }
+
+    private fun toggleUiVisibility() {
+        isUiVisible = !isUiVisible
+        val visibility = if (isUiVisible) View.VISIBLE else View.GONE
+        binding.btnBack.visibility = visibility
+        binding.btnDelete.visibility = visibility
+
+        val list = viewModel.mediaList.value
+        val currentItem = list?.getOrNull(viewModel.currentPosition)
+        if (currentItem?.isVideo == true) {
+            binding.videoControlsPanel.visibility = visibility
+        }
+    }
+
+    private fun formatTime(millis: Int): String {
+        val seconds = TimeUnit.MILLISECONDS.toSeconds(millis.toLong())
+        val minutes = seconds / 60
+        val remainingSeconds = seconds % 60
+        return String.format("%02d:%02d", minutes, remainingSeconds)
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        binding.videoView.stopPlayback()
+        _binding = null
+    }
+}
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\java\com\example\simplecamera\MainActivity.kt ---
+package com.example.simplecamera
+
+import android.os.Bundle
+import androidx.activity.enableEdgeToEdge
+import androidx.appcompat.app.AppCompatActivity
+import com.example.simplecamera.databinding.ActivityMainBinding
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var binding: ActivityMainBinding
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
+        super.onCreate(savedInstanceState)
+
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
+    }
+}
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\color\selector_chip_background.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Когда выбрано: Черный фон -->
+    <item android:color="@android:color/black" android:state_checked="true"/>
+    <!-- Обычно: Прозрачный фон -->
+    <item android:color="@android:color/transparent" android:state_checked="false"/>
+</selector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\color\selector_chip_text.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Когда выбрано: Белый текст -->
+    <item android:color="@android:color/white" android:state_checked="true"/>
+    <!-- Обычно: Черный текст -->
+    <item android:color="@android:color/black" android:state_checked="false"/>
+</selector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\color\selector_toggle_bg.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@android:color/white" android:state_checked="true"/>
+    <item android:color="@android:color/transparent" android:state_checked="false"/>
+</selector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\color\selector_toggle_text.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@android:color/black" android:state_checked="true"/>
+    <item android:color="@android:color/white" android:state_checked="false"/>
+</selector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\gradient_bottom_shadow.xml ---
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <gradient android:startColor="#80000000" android:endColor="#00000000" android:angle="90"/>
+</shape>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\ic_back_arrow.xml ---
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#000000">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M20,11H7.83l5.59,-5.59L12,4l-8,8 8,8 1.41,-1.41L7.83,13H20v-2z"/>
+</vector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\ic_flash_off.xml ---
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:height="24dp" android:tint="#000000" android:viewportHeight="24" android:viewportWidth="24" android:width="24dp">
+      
+    <path android:fillColor="@android:color/white" android:pathData="M3.27,3L2,4.27l5,5V13h3v9l3.58,-6.14L17.73,20 19,18.73 3.27,3zM17,10h-4l4,-8H7v2.18l8.46,8.46L17,10z"/>
+    
+</vector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\ic_flash_on.xml ---
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:height="24dp" android:tint="#000000" android:viewportHeight="24" android:viewportWidth="24" android:width="24dp">
+      
+    <path android:fillColor="@android:color/white" android:pathData="M7,2v11h3v9l7,-12h-4l4,-8z"/>
+    
+</vector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\ic_flip_camera.xml ---
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:height="24dp" android:tint="#FFFFFF" android:viewportHeight="24" android:viewportWidth="24" android:width="24dp">
+
+    <path android:fillColor="@android:color/white" android:pathData="M8,10V8H5.09C6.47,5.61 9.05,4 12,4c3.72,0 6.85,2.56 7.74,6h2.06c-0.93,-4.56 -4.96,-8 -9.8,-8C8.73,2 5.82,3.58 4,6.01V4H2v6H8z"/>
+
+    <path android:fillColor="@android:color/white" android:pathData="M16,14v2h2.91c-1.38,2.39 -3.96,4 -6.91,4c-3.72,0 -6.85,-2.56 -7.74,-6H2.2c0.93,4.56 4.96,8 9.8,8c3.27,0 6.18,-1.58 8,-4.01V20h2v-6H16z"/>
+    
+</vector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\ic_gallery.xml ---
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:height="24dp" android:tint="#FFFFFF" android:viewportHeight="24" android:viewportWidth="24" android:width="24dp">
+      
+    <path android:fillColor="@android:color/white" android:pathData="M21,19V5c0,-1.1 -0.9,-2 -2,-2H5c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h14c1.1,0 2,-0.9 2,-2zM8.5,13.5l2.5,3.01L14.5,12l4.5,6H5l3.5,-4.5z"/>
+    
+</vector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\ic_launcher_background.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#3DDC84"
+        android:pathData="M0,0h108v108h-108z" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M9,0L9,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,0L19,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M29,0L29,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M39,0L39,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M49,0L49,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M59,0L59,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M69,0L69,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M79,0L79,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M89,0L89,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M99,0L99,108"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,9L108,9"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,19L108,19"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,29L108,29"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,39L108,39"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,49L108,49"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,59L108,59"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,69L108,69"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,79L108,79"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,89L108,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M0,99L108,99"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,29L89,29"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,39L89,39"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,49L89,49"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,59L89,59"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,69L89,69"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M19,79L89,79"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M29,19L29,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M39,19L39,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M49,19L49,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M59,19L59,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M69,19L69,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M79,19L79,89"
+        android:strokeWidth="0.8"
+        android:strokeColor="#33FFFFFF" />
+</vector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\ic_launcher_foreground.xml ---
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M31,63.928c0,0 6.4,-11 12.1,-13.1c7.2,-2.6 26,-1.4 26,-1.4l38.1,38.1L107,108.928l-32,-1L31,63.928z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:endX="85.84757"
+                android:endY="92.4963"
+                android:startX="42.9492"
+                android:startY="49.59793"
+                android:type="linear">
+                <item
+                    android:color="#44000000"
+                    android:offset="0.0" />
+                <item
+                    android:color="#00000000"
+                    android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="nonZero"
+        android:pathData="M65.3,45.828l3.8,-6.6c0.2,-0.4 0.1,-0.9 -0.3,-1.1c-0.4,-0.2 -0.9,-0.1 -1.1,0.3l-3.9,6.7c-6.3,-2.8 -13.4,-2.8 -19.7,0l-3.9,-6.7c-0.2,-0.4 -0.7,-0.5 -1.1,-0.3C38.8,38.328 38.7,38.828 38.9,39.228l3.8,6.6C36.2,49.428 31.7,56.028 31,63.928h46C76.3,56.028 71.8,49.428 65.3,45.828zM43.4,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2c-0.3,-0.7 -0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C45.3,56.528 44.5,57.328 43.4,57.328L43.4,57.328zM64.6,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2s-0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C66.5,56.528 65.6,57.328 64.6,57.328L64.6,57.328z"
+        android:strokeWidth="1"
+        android:strokeColor="#00000000" />
+</vector>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\shape_focus_ring.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <stroke
+        android:width="2dp"
+        android:color="#FFFFFF" />
+    <solid android:color="#00000000" /> <!-- Прозрачный центр -->
+    <size android:width="64dp" android:height="64dp"/>
+</shape>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\drawable\shape_red_dot.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#FF0000" />
+    <size android:width="12dp" android:height="12dp"/>
+</shape>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\layout\activity_main.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/main"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <androidx.fragment.app.FragmentContainerView
+        android:id="@+id/nav_host_fragment"
+        android:name="androidx.navigation.fragment.NavHostFragment"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:defaultNavHost="true"
+        app:navGraph="@navigation/nav_graph" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\layout\fragment_camera.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black"
+    android:clipChildren="false">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/viewFinder"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:scaleType="fitStart"
+        app:implementationMode="compatible" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnAspectRatio"
+        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_marginTop="16dp"
+        android:text="3:4"
+        android:textColor="@android:color/white"
+        app:strokeColor="@android:color/white"
+        app:strokeWidth="1dp"
+        app:cornerRadius="20dp"
+        android:elevation="10dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ImageButton
+        android:id="@+id/btnFlash"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:src="@drawable/ic_flash_off"
+        app:tint="@android:color/white"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        android:elevation="10dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ImageView
+        android:id="@+id/focusRing"
+        android:layout_width="50dp"
+        android:layout_height="50dp"
+        android:src="@drawable/shape_focus_ring"
+        android:visibility="invisible"
+        android:elevation="10dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <View
+        android:id="@+id/flash_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/white"
+        android:visibility="gone"
+        android:elevation="20dp"
+        android:alpha="0.8"/>
+
+    <com.google.android.material.button.MaterialButtonToggleGroup
+        android:id="@+id/mode_toggle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"
+        android:elevation="10dp"
+        app:singleSelection="true"
+        app:selectionRequired="true"
+        app:checkedButton="@id/btn_mode_photo"
+        app:layout_constraintBottom_toTopOf="@id/image_capture_button"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_mode_photo"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PHOTO"
+            android:textColor="@color/selector_toggle_text"
+            app:backgroundTint="@color/selector_toggle_bg"
+            app:strokeColor="@android:color/white"
+            app:strokeWidth="1dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_mode_video"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="VIDEO"
+            android:textColor="@color/selector_toggle_text"
+            app:backgroundTint="@color/selector_toggle_bg"
+            app:strokeColor="@android:color/white"
+            app:strokeWidth="1dp"/>
+    </com.google.android.material.button.MaterialButtonToggleGroup>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/image_capture_button"
+        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+        android:layout_width="70dp"
+        android:layout_height="70dp"
+        android:layout_marginBottom="80dp"
+        android:backgroundTint="@android:color/transparent"
+        app:strokeColor="@android:color/white"
+        app:strokeWidth="4dp"
+        android:elevation="0dp"
+        android:stateListAnimator="@null"
+        android:insetLeft="0dp"
+        android:insetTop="0dp"
+        android:insetRight="0dp"
+        android:insetBottom="0dp"
+        app:cornerRadius="35dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <ImageButton
+        android:id="@+id/camera_switch_button"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:src="@drawable/ic_flip_camera"
+        android:scaleType="centerInside"
+        android:padding="10dp"
+        android:elevation="10dp"
+        app:layout_constraintBottom_toBottomOf="@id/image_capture_button"
+        app:layout_constraintStart_toEndOf="@id/image_capture_button"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="@id/image_capture_button" />
+
+    <ImageButton
+        android:id="@+id/gallery_button"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:src="@drawable/ic_gallery"
+        app:tint="@android:color/white"
+        android:scaleType="centerInside"
+        android:padding="10dp"
+        android:elevation="10dp"
+        app:layout_constraintBottom_toBottomOf="@id/image_capture_button"
+        app:layout_constraintEnd_toStartOf="@id/image_capture_button"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="@id/image_capture_button" />
+
+    <LinearLayout
+        android:id="@+id/recording_panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:visibility="gone"
+        android:layout_marginTop="60dp"
+        android:elevation="10dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ImageView
+            android:id="@+id/recording_indicator"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/shape_red_dot"
+            android:layout_marginEnd="8dp"/>
+
+        <TextView
+            android:id="@+id/timer_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:textSize="24sp"
+            android:text="00:00"/>
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\layout\fragment_gallery.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/white">
+
+    <ImageButton
+        android:id="@+id/btnBack"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:src="@drawable/ic_back_arrow"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:layout_marginStart="8dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="@id/filterChipGroup"
+        app:layout_constraintBottom_toBottomOf="@id/filterChipGroup" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/filterChipGroup"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        app:singleLine="true"
+        app:singleSelection="true"
+        app:selectionRequired="true"
+        app:checkedChip="@id/chipAll"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipAll"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Все"
+            android:textColor="@color/selector_chip_text"
+            app:chipBackgroundColor="@color/selector_chip_background"
+            app:chipStrokeColor="@android:color/black"
+            app:chipStrokeWidth="1dp"/>
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipPhotos"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Фото"
+            android:textColor="@color/selector_chip_text"
+            app:chipBackgroundColor="@color/selector_chip_background"
+            app:chipStrokeColor="@android:color/black"
+            app:chipStrokeWidth="1dp"/>
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipVideos"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Видео"
+            android:textColor="@color/selector_chip_text"
+            app:chipBackgroundColor="@color/selector_chip_background"
+            app:chipStrokeColor="@android:color/black"
+            app:chipStrokeWidth="1dp"/>
+
+    </com.google.android.material.chip.ChipGroup>
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerView"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        app:layoutManager="androidx.recyclerview.widget.GridLayoutManager"
+        app:spanCount="3"
+        app:layout_constraintTop_toBottomOf="@id/filterChipGroup"
+        app:layout_constraintBottom_toBottomOf="parent"/>
+
+    <TextView
+        android:id="@+id/emptyView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Нет файлов"
+        android:textColor="@android:color/black"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <ProgressBar
+        android:id="@+id/progressBar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:indeterminateTint="@android:color/black"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\layout\fragment_viewer.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <ImageView
+        android:id="@+id/imageView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="fitCenter"
+        android:visibility="gone"/>
+
+    <ImageButton
+        android:id="@+id/btnDelete"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:src="@android:drawable/ic_menu_delete"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        app:tint="@android:color/white"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <VideoView
+        android:id="@+id/videoView"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"/>
+
+    <ImageView
+        android:id="@+id/iconPlayCenter"
+        android:layout_width="80dp"
+        android:layout_height="80dp"
+        android:src="@android:drawable/ic_media_play"
+        android:visibility="gone"
+        android:alpha="0.7"
+        app:tint="@android:color/white"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ImageButton
+        android:id="@+id/btnBack"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:src="@drawable/ic_back_arrow"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="16dp"
+        app:tint="@android:color/white"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <LinearLayout
+        android:id="@+id/videoControlsPanel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:padding="8dp"
+        android:background="#80000000"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <TextView
+            android:id="@+id/tvCurrentTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="00:00"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+
+        <SeekBar
+            android:id="@+id/videoSeekBar"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:progressTint="@android:color/white"
+            android:thumbTint="@android:color/white" />
+
+        <TextView
+            android:id="@+id/tvTotalTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="00:00"
+            android:textColor="@android:color/white"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\layout\item_gallery.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.cardview.widget.CardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="1dp"
+    app:cardCornerRadius="4dp"
+    app:cardElevation="0dp">
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <ImageView
+            android:id="@+id/thumbnail"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:scaleType="centerCrop"
+            android:background="#EEE"
+            app:layout_constraintDimensionRatio="1:1"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"/>
+
+        <View
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:background="@drawable/gradient_bottom_shadow"
+            app:layout_constraintBottom_toBottomOf="@id/thumbnail"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"/>
+
+        <ImageView
+            android:id="@+id/typeIcon"
+            android:layout_width="24dp"
+            android:layout_height="24dp"
+            android:src="@android:drawable/ic_media_play"
+            android:layout_margin="4dp"
+            app:tint="@android:color/white"
+            app:layout_constraintTop_toTopOf="parent"
+            app:layout_constraintEnd_toEndOf="parent"/>
+
+        <TextView
+            android:id="@+id/dateText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            tools:text="12.05.2025"
+            android:textColor="@android:color/white"
+            android:textSize="10sp"
+            android:layout_margin="4dp"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"/>
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+</androidx.cardview.widget.CardView>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\mipmap-anydpi-v26\ic_launcher.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\mipmap-anydpi-v26\ic_launcher_round.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@drawable/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\navigation\nav_graph.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/cameraFragment">
+
+    <fragment
+        android:id="@+id/cameraFragment"
+        android:name="com.example.simplecamera.ui.camera.CameraFragment"
+        tools:layout="@layout/fragment_camera">
+        <action
+            android:id="@+id/action_camera_to_gallery"
+            app:destination="@id/galleryFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/galleryFragment"
+        android:name="com.example.simplecamera.ui.gallery.GalleryFragment"
+        tools:layout="@layout/fragment_gallery">
+        <action
+            android:id="@+id/action_gallery_to_viewer"
+            app:destination="@id/viewerFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/viewerFragment"
+        android:name="com.example.simplecamera.ui.viewer.ViewerFragment"
+        tools:layout="@layout/fragment_viewer">
+    </fragment>
+</navigation>
+
+
+
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\values\colors.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\values\strings.xml ---
+<resources>
+    <string name="app_name">SimpleCamera</string>
+</resources>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\values\themes.xml ---
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.SimpleCamera" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your light theme here. -->
+        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+    </style>
+
+    <style name="Theme.SimpleCamera" parent="Base.Theme.SimpleCamera" />
+</resources>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\values-night\themes.xml ---
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.SimpleCamera" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- Customize your dark theme here. -->
+        <!-- <item name="colorPrimary">@color/my_dark_primary</item> -->
+    </style>
+</resources>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\xml\backup_rules.xml ---
+<?xml version="1.0" encoding="utf-8"?><!--
+   Sample backup rules file; uncomment and customize as necessary.
+   See https://developer.android.com/guide/topics/data/autobackup
+   for details.
+   Note: This file is ignored for devices older than API 31
+   See https://developer.android.com/about/versions/12/backup-restore
+-->
+<full-backup-content>
+    <!--
+   <include domain="sharedpref" path="."/>
+   <exclude domain="sharedpref" path="device.xml"/>
+-->
+</full-backup-content>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\res\xml\data_extraction_rules.xml ---
+<?xml version="1.0" encoding="utf-8"?><!--
+   Sample data extraction rules file; uncomment and customize as necessary.
+   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
+   for details.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- TODO: Use <include> and <exclude> to control what is backed up.
+        <include .../>
+        <exclude .../>
+        -->
+    </cloud-backup>
+    <!--
+    <device-transfer>
+        <include .../>
+        <exclude .../>
+    </device-transfer>
+    -->
+</data-extraction-rules>
+--- D:\7sem\mobileDev\SimpleCamera\app\src\main\AndroidManifest.xml ---
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-feature android:name="android.hardware.camera.any" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SimpleCamera">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black"
+    android:clipChildren="false">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/viewFinder"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:scaleType="fitStart"
+        app:implementationMode="compatible" />
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnAspectRatio"
+        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_marginTop="16dp"
+        android:text="3:4"
+        android:textColor="@android:color/white"
+        app:strokeColor="@android:color/white"
+        app:strokeWidth="1dp"
+        app:cornerRadius="20dp"
+        android:elevation="10dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ImageButton
+        android:id="@+id/btnFlash"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:src="@drawable/ic_flash_off"
+        app:tint="@android:color/white"
+        android:layout_marginTop="16dp"
+        android:layout_marginEnd="16dp"
+        android:elevation="10dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <ImageView
+        android:id="@+id/focusRing"
+        android:layout_width="50dp"
+        android:layout_height="50dp"
+        android:src="@drawable/shape_focus_ring"
+        android:visibility="invisible"
+        android:elevation="10dp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <View
+        android:id="@+id/flash_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/white"
+        android:visibility="gone"
+        android:elevation="20dp"
+        android:alpha="0.8"/>
+
+    <com.google.android.material.button.MaterialButtonToggleGroup
+        android:id="@+id/mode_toggle"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="24dp"
+        android:elevation="10dp"
+        app:singleSelection="true"
+        app:selectionRequired="true"
+        app:checkedButton="@id/btn_mode_photo"
+        app:layout_constraintBottom_toTopOf="@id/image_capture_button"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_mode_photo"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="PHOTO"
+            android:textColor="@color/selector_toggle_text"
+            app:backgroundTint="@color/selector_toggle_bg"
+            app:strokeColor="@android:color/white"
+            app:strokeWidth="1dp"/>
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btn_mode_video"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="VIDEO"
+            android:textColor="@color/selector_toggle_text"
+            app:backgroundTint="@color/selector_toggle_bg"
+            app:strokeColor="@android:color/white"
+            app:strokeWidth="1dp"/>
+    </com.google.android.material.button.MaterialButtonToggleGroup>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/image_capture_button"
+        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+        android:layout_width="70dp"
+        android:layout_height="70dp"
+        android:layout_marginBottom="80dp"
+        android:backgroundTint="@android:color/transparent"
+        app:strokeColor="@android:color/white"
+        app:strokeWidth="4dp"
+        android:elevation="0dp"
+        android:stateListAnimator="@null"
+        android:insetLeft="0dp"
+        android:insetTop="0dp"
+        android:insetRight="0dp"
+        android:insetBottom="0dp"
+        app:cornerRadius="35dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
+
+    <ImageButton
+        android:id="@+id/camera_switch_button"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:src="@drawable/ic_flip_camera"
+        android:scaleType="centerInside"
+        android:padding="10dp"
+        android:elevation="10dp"
+        app:layout_constraintBottom_toBottomOf="@id/image_capture_button"
+        app:layout_constraintStart_toEndOf="@id/image_capture_button"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="@id/image_capture_button" />
+
+    <ImageButton
+        android:id="@+id/gallery_button"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:src="@drawable/ic_gallery"
+        app:tint="@android:color/white"
+        android:scaleType="centerInside"
+        android:padding="10dp"
+        android:elevation="10dp"
+        app:layout_constraintBottom_toBottomOf="@id/image_capture_button"
+        app:layout_constraintEnd_toStartOf="@id/image_capture_button"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="@id/image_capture_button" />
+
+    <LinearLayout
+        android:id="@+id/recording_panel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:visibility="gone"
+        android:layout_marginTop="60dp"
+        android:elevation="10dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent">
+
+        <ImageView
+            android:id="@+id/recording_indicator"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/shape_red_dot"
+            android:layout_marginEnd="8dp"/>
+
+        <TextView
+            android:id="@+id/timer_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@android:color/white"
+            android:textSize="24sp"
+            android:text="00:00"/>
+    </LinearLayout>
+
+</androidx.constraintlayout.widget.ConstraintLayout>
