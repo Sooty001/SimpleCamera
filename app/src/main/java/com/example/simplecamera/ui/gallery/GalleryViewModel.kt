@@ -23,18 +23,21 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     var currentPosition: Int = 0
     private var allFiles: List<MediaFile> = emptyList()
 
+    private var currentFilterId: Int = R.id.chipAll
+
     fun loadMedia() {
         _isLoading.value = true
         viewModelScope.launch {
             val list = repository.getMediaFiles()
-
             allFiles = list
-            _mediaList.value = list
+            filter(currentFilterId)
             _isLoading.value = false
         }
     }
 
     fun filter(filterId: Int) {
+        currentFilterId = filterId
+
         val filtered = when (filterId) {
             R.id.chipPhotos -> allFiles.filter { !it.isVideo }
             R.id.chipVideos -> allFiles.filter { it.isVideo }
@@ -52,14 +55,11 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
             val isDeleted = repository.deleteFile(itemToDelete.uri)
 
             if (isDeleted) {
-                val newFilteredList = list.toMutableList()
-                newFilteredList.remove(itemToDelete)
-                _mediaList.value = newFilteredList
-
                 allFiles = allFiles.filter { it.id != itemToDelete.id }
-
-                if (currentPosition >= newFilteredList.size) {
-                    currentPosition = maxOf(0, newFilteredList.size - 1)
+                filter(currentFilterId)
+                val newList = _mediaList.value ?: emptyList()
+                if (currentPosition >= newList.size) {
+                    currentPosition = maxOf(0, newList.size - 1)
                 }
 
                 onSuccess()
