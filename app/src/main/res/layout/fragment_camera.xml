@@ -15,6 +15,18 @@
         app:scaleType="fitStart"
         app:implementationMode="compatible" />
 
+    <ImageView
+        android:id="@+id/freezeFrame"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        android:scaleType="fitCenter"
+        android:background="@android:color/black"
+        app:layout_constraintTop_toTopOf="@id/viewFinder"
+        app:layout_constraintBottom_toBottomOf="@id/viewFinder"
+        app:layout_constraintStart_toStartOf="@id/viewFinder"
+        app:layout_constraintEnd_toEndOf="@id/viewFinder" />
+
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnAspectRatio"
         style="@style/Widget.MaterialComponents.Button.OutlinedButton"

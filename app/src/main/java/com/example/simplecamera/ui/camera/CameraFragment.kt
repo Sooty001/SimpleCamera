@@ -90,8 +90,10 @@ class CameraFragment : Fragment() {
             }
 
             cameraSwitchButton.setOnClickListener {
+                freezeCameraPreview()
                 cameraManager.toggleCamera()
                 updateFlashButtonState()
+                unfreezeCameraPreview()
             }
 
             btnAspectRatio.setOnClickListener {
@@ -120,9 +122,11 @@ class CameraFragment : Fragment() {
                     val newModeVideo = (checkedId == R.id.btn_mode_video)
 
                     if (isVideoMode != newModeVideo) {
+                        freezeCameraPreview()
                         isVideoMode = newModeVideo
                         cameraManager.setMode(isVideoMode)
                         updateUIForMode()
+                        unfreezeCameraPreview()
                     }
                 }
             }
@@ -194,6 +198,29 @@ class CameraFragment : Fragment() {
             binding.imageCaptureButton.cornerRadius = (35 * density).toInt()
             binding.imageCaptureButton.icon = null
         }
+    }
+
+    private fun freezeCameraPreview() {
+        val bitmap = binding.viewFinder.bitmap
+        if (bitmap != null) {
+            binding.freezeFrame.setImageBitmap(bitmap)
+            binding.freezeFrame.alpha = 1f
+            binding.freezeFrame.visibility = View.VISIBLE
+        } else {
+        }
+    }
+
+    private fun unfreezeCameraPreview() {
+        binding.freezeFrame.postDelayed({
+            binding.freezeFrame.animate()
+                .alpha(0f)
+                .setDuration(250)
+                .withEndAction {
+                    binding.freezeFrame.visibility = View.GONE
+                    binding.freezeFrame.setImageBitmap(null)
+                }
+                .start()
+        }, 500)
     }
 
     private fun animateRecordButton(isRecording: Boolean) {
