@@ -159,32 +159,21 @@ class ViewerFragment : Fragment() {
     }
 
     private fun deleteCurrentMedia() {
-        val list = viewModel.mediaList.value ?: return
-        val pos = viewModel.currentPosition
-        if (pos !in list.indices) return
-
-        val item = list[pos]
-        try {
-            val rowsDeleted = requireContext().contentResolver.delete(item.uri, null, null)
-            if (rowsDeleted > 0) {
+        viewModel.deleteCurrentMedia(
+            onSuccess = {
                 Toast.makeText(context, "Удалено", Toast.LENGTH_SHORT).show()
-                viewModel.deleteItem(pos)
 
-                val newList = viewModel.mediaList.value
-                if (newList.isNullOrEmpty()) {
+                val list = viewModel.mediaList.value
+                if (list.isNullOrEmpty()) {
                     findNavController().popBackStack()
                 } else {
-                    if (viewModel.currentPosition >= newList.size) {
-                        viewModel.currentPosition = newList.size - 1
-                    }
                     showContent(viewModel.currentPosition)
                 }
-            } else {
-                Toast.makeText(context, "Не удалось удалить", Toast.LENGTH_SHORT).show()
+            },
+            onError = { errorMessage ->
+                Toast.makeText(context, errorMessage, Toast.LENGTH_SHORT).show()
             }
-        } catch (e: Exception) {
-            Toast.makeText(context, "Ошибка: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-        }
+        )
     }
 
     private fun loadPrevious() {

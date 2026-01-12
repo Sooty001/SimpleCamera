@@ -1,18 +1,18 @@
 package com.example.simplecamera.ui.gallery
 
 import android.app.Application
-import android.content.ContentUris
-import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
 import com.example.simplecamera.R
 import com.example.simplecamera.data.model.MediaFile
-import kotlinx.coroutines.Dispatchers
+import com.example.simplecamera.data.repository.GalleryRepository
 import kotlinx.coroutines.launch
 
 class GalleryViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val repository = GalleryRepository(application.applicationContext)
 
     private val _mediaList = MutableLiveData<List<MediaFile>>()
     val mediaList: LiveData<List<MediaFile>> get() = _mediaList
@@ -21,53 +21,16 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
     val isLoading: LiveData<Boolean> get() = _isLoading
 
     var currentPosition: Int = 0
-
     private var allFiles: List<MediaFile> = emptyList()
 
     fun loadMedia() {
         _isLoading.value = true
-        viewModelScope.launch(Dispatchers.IO) {
-            val list = mutableListOf<MediaFile>()
-            val projection = arrayOf(
-                MediaStore.Files.FileColumns._ID,
-                MediaStore.Files.FileColumns.MEDIA_TYPE,
-                MediaStore.Files.FileColumns.DATE_ADDED
-            )
-            val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
-            val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${MediaStore.Files.FileColumns.MEDIA_TYPE}=?"
-            val selectionArgs = arrayOf(
-                MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
-                MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
-            )
-            val uri = MediaStore.Files.getContentUri("external")
-
-            getApplication<Application>().contentResolver.query(
-                uri, projection, selection, selectionArgs, sortOrder
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
-                val typeCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.MEDIA_TYPE)
-                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns.DATE_ADDED)
-
-                while (cursor.moveToNext()) {
-                    val id = cursor.getLong(idCol)
-                    val type = cursor.getInt(typeCol)
-                    val date = cursor.getLong(dateCol)
-                    val contentUri = ContentUris.withAppendedId(uri, id)
-
-                    list.add(
-                        MediaFile(
-                            id,
-                            contentUri,
-                            type == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO,
-                            date * 1000
-                        )
-                    )
-                }
-            }
+        viewModelScope.launch {
+            val list = repository.getMediaFiles()
 
             allFiles = list
-            _mediaList.postValue(list)
-            _isLoading.postValue(false)
+            _mediaList.value = list
+            _isLoading.value = false
         }
     }
 
@@ -80,12 +43,28 @@ class GalleryViewModel(application: Application) : AndroidViewModel(application)
         _mediaList.value = filtered
     }
 
-    fun deleteItem(index: Int) {
-        if (index in allFiles.indices) {
-            val newList = _mediaList.value?.toMutableList() ?: return
-            if (index < newList.size) {
-                newList.removeAt(index)
-                _mediaList.value = newList
+    fun deleteCurrentMedia(onSuccess: () -> Unit, onError: (String) -> Unit) {
+        val list = _mediaList.value ?: return
+        if (currentPosition !in list.indices) return
+        val itemToDelete = list[currentPosition]
+
+        viewModelScope.launch {
+            val isDeleted = repository.deleteFile(itemToDelete.uri)
+
+            if (isDeleted) {
+                val newFilteredList = list.toMutableList()
+                newFilteredList.remove(itemToDelete)
+                _mediaList.value = newFilteredList
+
+                allFiles = allFiles.filter { it.id != itemToDelete.id }
+
+                if (currentPosition >= newFilteredList.size) {
+                    currentPosition = maxOf(0, newFilteredList.size - 1)
+                }
+
+                onSuccess()
+            } else {
+                onError("Не удалось удалить файл")
             }
         }
     }
